@@ -99,6 +99,15 @@ namespace OpenXmlPowerTools
         public bool? Bold;
         public bool? Italic;
         public string FormatCode;
+
+
+        public bool? Border { get; set; }
+
+        public uint? Rotation { get; set; }
+
+        public string ForeColor { get; set; }
+        public string BackColor { get; set; }
+
     }
 
     public enum HorizontalCellAlignment
@@ -381,7 +390,10 @@ namespace OpenXmlPowerTools
                     if (cell.Bold != null ||
                         cell.Italic != null ||
                         cell.FormatCode != null ||
-                        cell.HorizontalCellAlignment != null)
+                        cell.HorizontalCellAlignment != null ||
+                        cell.BackColor != null || 
+                        cell.ForeColor != null ||
+                        cell.Border != null)
                     {
                         xw.WriteStartAttribute("s");
                         xw.WriteValue(GetCellStyle(sDoc, cell));
@@ -395,9 +407,11 @@ namespace OpenXmlPowerTools
                             xw.WriteEndAttribute();
                             break;
                         case CellDataType.Date:
-                            xw.WriteStartAttribute("t");
-                            xw.WriteValue("d");
-                            xw.WriteEndAttribute();
+                            // apparently this breaks the output?
+                            // don't include this in the output
+                            //xw.WriteStartAttribute("t");
+                            //xw.WriteValue("d");
+                            //xw.WriteEndAttribute();
                             break;
                         case CellDataType.Number:
                             xw.WriteStartAttribute("t");
@@ -466,6 +480,10 @@ namespace OpenXmlPowerTools
                 applyAlignment = new XAttribute(SSNoNamespace.applyAlignment, 1);
                 alignment = new XElement(S.alignment,
                     new XAttribute(SSNoNamespace.horizontal, cell.HorizontalCellAlignment.ToString().ToLower()));
+                if (cell.Rotation != null)
+                {
+                    alignment.Add(new XAttribute(SSNoNamespace.textRotation, cell.Rotation.Value));
+                }
             }
             XAttribute applyNumberFormat = null;
             XAttribute numFmtId = null;
@@ -482,12 +500,29 @@ namespace OpenXmlPowerTools
                     numFmtId = new XAttribute(SSNoNamespace.numFmtId, GetNumFmtId(sXDoc, cell.FormatCode));
                 }
             }
+            XAttribute applyFill = null;
+            XAttribute fillId = null;
+            if (cell.BackColor != null || cell.ForeColor != null)
+            {
+                applyFill = new XAttribute(SSNoNamespace.applyFill, 1);
+                fillId = new XAttribute(SSNoNamespace.fillId, GetFillId(sXDoc, cell.BackColor, cell.ForeColor));
+            }
+
+            XAttribute borderId = null;
+
+            if (cell.Border != null)
+            {
+                borderId = new XAttribute(SSNoNamespace.borderId, GetBorderId(sXDoc, cell.Border.Value));
+            }
             XElement newXf = new XElement(S.xf,
                 applyFont,
                 fontId,
                 applyAlignment,
                 alignment,
                 applyNumberFormat,
+                applyFill,
+                fillId,
+                borderId,
                 numFmtId);
             XElement cellXfs = sXDoc
                 .Root
@@ -506,6 +541,62 @@ namespace OpenXmlPowerTools
                 cellXfs.Add(newXf);
                 return currentCount;
             }
+        }
+        private static int GetBorderId(XDocument sXDoc, bool hasBorder)
+        {
+            var borders = sXDoc.Root.Element(S.borders);
+
+            // this should always be defined
+            if (borders == null)
+            {
+                borders = new XElement(S.borders, new XAttribute(SSNoNamespace.count, 0));
+                sXDoc.Root.Add(borders);
+            }
+            var border = new XElement(S.border);
+            borders.Add(border);
+
+            var attr = hasBorder ? new XAttribute(SSNoNamespace.style, "thin") : null;
+
+            border.Add(new XElement(S.left, attr));
+            border.Add(new XElement(S.right, attr));
+            border.Add(new XElement(S.top, attr));
+            border.Add(new XElement(S.bottom, attr));
+            border.Add(new XElement(S.diagonal, attr));
+
+            var count = (int)borders.Attribute(SSNoNamespace.count);
+            borders.SetAttributeValue(SSNoNamespace.count, count + 1);
+            return count;
+        }
+
+        private static int GetFillId(XDocument sXDoc, string backColor, string foreColor)
+        {
+            var fills = sXDoc.Root.Element(S.fills);
+
+            // this should always be defined
+            if (fills == null)
+            {
+                fills = new XElement(S.fills, new XAttribute(SSNoNamespace.count, 0));
+                sXDoc.Root.Add(fills);
+            }
+
+            var fill = new XElement(S.fill);
+            fills.Add(fill);
+            
+            var patternFill = new XElement(S.patternFill, new XAttribute(SSNoNamespace.patternType, "solid"));
+            fill.Add(patternFill);
+
+            if (backColor != null)
+            {
+                patternFill.Add(new XElement(S.bgColor, new XAttribute(SSNoNamespace.rgb, backColor)));
+            }
+            if (foreColor != null)
+            {
+                patternFill.Add(new XElement(S.fgColor, new XAttribute(SSNoNamespace.rgb, foreColor)));
+            }
+
+            var count = (int)fills.Attribute(SSNoNamespace.count);
+            fills.SetAttributeValue(SSNoNamespace.count, count + 1);
+            return count;
         }
 
         private static int GetFontId(XDocument sXDoc, CellDfn cell)
@@ -566,7 +657,9 @@ namespace OpenXmlPowerTools
             bool matchFont = MatchFont(sXDoc, xf, cell);
             bool matchAlignment = MatchAlignment(sXDoc, xf, cell);
             bool matchFormat = MatchFormat(sXDoc, xf, cell);
-            return (matchFont && matchAlignment && matchFormat);
+            bool matchColor = MatchColor(sXDoc, xf, cell);
+            return (matchFont && matchAlignment && matchFormat && matchColor 
+                && MatchBorder(sXDoc, xf, cell));
         }
 
         private static bool MatchFont(XDocument sXDoc, XElement xf, CellDfn cell)
@@ -607,7 +700,79 @@ namespace OpenXmlPowerTools
             bool match = alignment == cell.HorizontalCellAlignment.ToString().ToLower();
             return match;
         }
+        private static bool MatchBorder(XDocument sXDoc, XElement xf, CellDfn cell)
+        {
+            if (cell.Border == null && xf.Attribute(SSNoNamespace.borderId) == null) return true;
 
+            var borderId = (int)xf.Attribute(SSNoNamespace.borderId);
+
+            var borders = sXDoc.Root.Element(S.borders);
+            if (borders == null) return false;
+
+            var border = borders.Elements(S.border).ElementAt(borderId);
+            if (border == null) return false;
+
+            var compare = cell.Border == true ? "thin" : null;
+            
+            return border.Elements().All(e => (string)e.Attribute(SSNoNamespace.style) == compare);
+        }
+
+        private static bool MatchColor(XDocument sXDoc, XElement xf, CellDfn cell)
+        {
+            // applyFill = 1
+            // fillId = N   -> referring to fills > patternFill patternType="solid" x:fgColor rgb = cell.ForeColour
+
+            // no options selected
+            if (cell.ForeColor == null && cell.BackColor == null && (int?)xf.Attribute(SSNoNamespace.applyFill) != 1) return true;
+
+            // colour selected but apply fill not
+            if ((cell.ForeColor != null || cell.BackColor != null) && xf.Attribute(SSNoNamespace.applyFill) == null) return false;
+
+            // compare the actual formats
+            int fillId = (int)xf.Attribute(SSNoNamespace.fillId);
+            int? nfi = null;
+            int value;
+
+            var fills = sXDoc.Root.Element(S.fills);
+
+            if (fills == null)
+                return false;
+
+            XElement fill = fills
+                .Elements(S.fill)
+                .ElementAt(fillId);
+
+            if (fill == null) return false;
+
+            var patternFill = fill.Elements(S.patternFill).FirstOrDefault();
+            if (patternFill == null) return false;
+
+            var patternType = patternFill.Attribute(SSNoNamespace.patternType);
+            if ((string)patternType != "solid") return false;
+
+            var fg = patternFill.Elements(S.fgColor).FirstOrDefault();
+            var bg = patternFill.Elements(S.bgColor).FirstOrDefault();
+
+            if ((fg != null && cell.ForeColor == null)
+                || (fg == null && cell.ForeColor != null) 
+                || (bg != null && cell.BackColor == null) 
+                || (bg == null && cell.BackColor != null)) return false;
+
+
+            if (fg != null)
+            {
+                var fgRgb = fg.Attribute(SSNoNamespace.rgb);
+                if (fgRgb != null && !((string)fgRgb).Equals(cell.ForeColor, StringComparison.InvariantCultureIgnoreCase)) return false;
+            }
+            if (bg != null)
+            {
+                var bgRgb = bg.Attribute(SSNoNamespace.rgb);
+                if (bgRgb != null && !((string)bgRgb).Equals(cell.ForeColor, StringComparison.InvariantCultureIgnoreCase)) return false;
+            }
+
+            // hooray
+            return true;
+        }
         private static bool MatchFormat(XDocument sXDoc, XElement xf, CellDfn cell)
         {
             if ((int?)xf.Attribute(SSNoNamespace.applyNumberFormat) != 1 &&

@@ -1880,6 +1880,8 @@ namespace OpenXmlPowerTools
         public static XName xfId = "xfId";
         public static XName xWindow = "xWindow";
         public static XName yWindow = "yWindow";
+        public static XName applyFill = nameof(applyFill);
+        public static XName textRotation = nameof(textRotation);
     }
 
     public static class WNE
